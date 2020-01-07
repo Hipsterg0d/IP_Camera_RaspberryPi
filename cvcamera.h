@@ -47,15 +47,20 @@ private:
     void setFormat(const int width, const int heigth, const QVideoFrame::PixelFormat& format);
     void grabVideoContents();
     void newVideoFile();
+    qint64 detectMotion(cv::Mat& matGray, cv::Mat& newMatGray, cv::Mat& diff, std::vector<std::vector<cv::Point>>& contours);
 
     QAbstractVideoSurface* m_Surface;
     QVideoSurfaceFormat m_Format;
     QFuture<void> m_FutureGrabVideoContents;
     QSize m_AspectRatio;
-    cv::VideoCapture m_Cam;
+    qint64 m_lastMovement;
 
+    cv::VideoCapture m_Cam;
     cv::Mat m_Mat;
+    cv::Mat m_NewMat;
     cv::Mat m_MatRGB;
+
+    int m_NumPixels;
     bool m_FormatSet;
     bool m_Running;
 };

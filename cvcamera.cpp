@@ -6,6 +6,8 @@
 #include <QDateTime>
 #include <QTimer>
 
+#include <QDebug>
+
 CvCamera::CvCamera(QObject *parent)
     : QObject{ parent }, m_Surface{ Q_NULLPTR }, m_AspectRatio{ 1920, 1024 }, m_FormatSet{ false }, m_Running{ false }
 {
@@ -68,14 +70,12 @@ void CvCamera::onNewVideoContentReceived(const QVideoFrame &frame)
 
 void CvCamera::open()
 {
-    if(!m_Cam.isOpened()) {
-        m_Cam.open("*****");
-
-        m_AspectRatio = QSize(m_Cam.get(CV_CAP_PROP_FRAME_WIDTH), m_Cam.get(CV_CAP_PROP_FRAME_HEIGHT));
+    while(!m_Cam.isOpened()) {
+        m_Cam.open("************");
     }
 
-    if(!m_Cam.isOpened())
-        QGuiApplication::exit(EXIT_FAILURE);
+    m_AspectRatio = QSize(m_Cam.get(CV_CAP_PROP_FRAME_WIDTH), m_Cam.get(CV_CAP_PROP_FRAME_HEIGHT));
+    m_NumPixels = m_AspectRatio.width() * m_AspectRatio.height();
 }
 
 void CvCamera::release()
@@ -101,19 +101,39 @@ void CvCamera::setFormat(const int width, const int heigth, const QVideoFrame::P
 
 void CvCamera::grabVideoContents()
 {
-    //QDateTime dateTime = QDateTime::currentDateTime();
-    //cv::VideoWriter videoWriter(VIDEO_PATH + dateTime.toString().toStdString() + ".avi", CV_FOURCC('P','I','M','1'), 20, cv::Size(m_AspectRatio.width(), m_AspectRatio.height()), true);
+    cv::VideoWriter videoWriter;
+
+    m_Cam.read(m_Mat);
+    m_Cam.read(m_NewMat);
+
+    cv::Mat matGray(m_Mat.size(), CV_8U), newMatGray(m_NewMat.size(), CV_8U);
+    cv::Mat diff(m_Mat.size(), CV_8U);
+    std::vector<std::vector<cv::Point>> contours;
+
+    qint64 movementTime;
+    bool saveVideo = false;
+    m_lastMovement = 0;
 
     while(true) {
 
-        //QDateTime currDateTime = QDateTime::currentDateTime();
-        //if((currDateTime.toSecsSinceEpoch() - dateTime.toSecsSinceEpoch()) >= 3600) {
-        //    videoWriter = cv::VideoWriter(VIDEO_PATH + dateTime.toString().toStdString() + ".avi", CV_FOURCC('P','I','M','1'), 20, cv::Size(m_AspectRatio.width(), m_AspectRatio.height()), true);
-        //    dateTime = currDateTime;
-        //}
+        if(!m_Cam.isOpened())
+            open();
 
-        m_Mat.release();
-        m_Cam.read(m_Mat);
+        if((movementTime = detectMotion(matGray, newMatGray, diff, contours)) > 0)
+            m_lastMovement = movementTime;
+
+        QDateTime dateTime = QDateTime::currentDateTime();
+        if((dateTime.toSecsSinceEpoch() - m_lastMovement) < 30) {
+            if(saveVideo)
+                videoWriter.write(m_Mat);
+            else {
+                saveVideo = true;
+                videoWriter = cv::VideoWriter(VIDEO_PATH + dateTime.toString().toStdString() + ".avi", CV_FOURCC('P','I','M','1'), 20, cv::Size(m_AspectRatio.width(), m_AspectRatio.height()), true);
+                videoWriter.write(m_Mat);
+            }
+        }
+        else
+            saveVideo = false;
 
         cv::cvtColor(m_Mat, m_MatRGB, cv::COLOR_BGR2RGB);
 
@@ -128,7 +148,9 @@ void CvCamera::grabVideoContents()
 
         Q_EMIT newVideoContent(frame);
 
-        //videoWriter.write(m_Mat);
+        m_NewMat.copyTo(m_Mat);
+        m_NewMat.release();
+        m_Cam.read(m_NewMat);
 
         QThread::msleep(5);
 
@@ -136,4 +158,33 @@ void CvCamera::grabVideoContents()
             return;
         }
     }
+}
+
+qint64 CvCamera::detectMotion(cv::Mat &matGray, cv::Mat &newMatGray, cv::Mat &diff, std::vector<std::vector<cv::Point>>& contours)
+{
+    cv::cvtColor(m_Mat, matGray, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(m_NewMat, newMatGray, cv::COLOR_BGR2GRAY);
+
+    cv::absdiff(matGray, newMatGray, diff);
+    cv::GaussianBlur(diff, diff, cv::Size(5, 5), 0);
+    cv::threshold(diff, diff, 20, 255, cv::THRESH_BINARY);
+    cv::dilate(diff, diff, 0, cv::Point(-1, -1), 3);
+
+    cv::findContours(diff, contours, cv::RETR_TREE, cv::CHAIN_APPROX_SIMPLE);
+
+    for (int i = 0; i < contours.size(); i++) {
+        cv::Rect rec = cv::boundingRect(contours[i]);
+        cv::rectangle(m_Mat, rec, cv::Scalar(0, 255, 0), 2);
+    }
+
+    int num = 0;
+    for (int i = 0; i < m_AspectRatio.height(); i++)
+        for (int j = 0; j < m_AspectRatio.width(); j++)
+            if (diff.at<unsigned char>(i, j) == 255)
+                num++;
+    double avg = (num * 100.0) / m_NumPixels;
+    if (avg >= 0.1)
+        return QDateTime::currentDateTime().toSecsSinceEpoch();
+    else
+        return 0;
 }
